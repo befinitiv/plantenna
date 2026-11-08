@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plantenna</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <aside id="panel">
+    <h1>Plantenna <span>LoRa 868 MHz line-of-sight planner</span></h1>
+
+    <form id="search">
+      <input id="search-q" type="text" placeholder="Search place or “lat, lon”" autocomplete="off">
+      <button type="submit">Go</button>
+    </form>
+
+    <p class="hint">Click the map to place the antenna. Drag the marker to move it.
+      Right-drag (or Ctrl-drag) to tilt and rotate. The antenna stands on the
+      surface (roof, hedge, tree) if bDOM is on when you place it, otherwise on the ground.
+      The receiver height is always above ground.</p>
+
+    <section>
+      <label>Antenna height above base
+        <span><input id="antenna-height" type="number" min="0" max="500" step="0.5" value="10"> m</span>
+      </label>
+      <label>Receiver height above ground
+        <span><input id="rx-height" type="number" min="0" max="100" step="0.5" value="1"> m</span>
+      </label>
+      <label>Analysis radius
+        <span><input id="radius" type="number" min="0.5" max="30" step="0.5" value="2"> km</span>
+      </label>
+      <label>Terrain resolution
+        <select id="zoom">
+          <option value="12">~22 m (DGM5)</option>
+          <option value="13">~11 m (DGM5)</option>
+          <option value="14" selected>~5.6 m (DGM5)</option>
+          <option value="15">~2.8 m (DGM1)</option>
+          <option value="16">~1.4 m (DGM1)</option>
+        </select>
+      </label>
+      <label>Earth curvature
+        <select id="kfactor">
+          <option value="1.3333333">radio, k = 4/3</option>
+          <option value="1">geometric, k = 1</option>
+          <option value="0">ignore</option>
+        </select>
+      </label>
+      <label>Fresnel zone clearance
+        <select id="fresnel">
+          <option value="0">off (line of sight only)</option>
+          <option value="0.6" selected>60 % of 1st zone</option>
+          <option value="1">100 % of 1st zone</option>
+        </select>
+      </label>
+      <p id="legend" class="hint">
+        <span class="swatch" style="background: rgb(255, 30, 30)"></span> clear
+        <span class="swatch" style="background: rgb(255, 170, 0)"></span> line of sight, Fresnel zone obstructed
+      </p>
+      <label class="check"><input id="surface" type="checkbox" checked>
+        Buildings, hedges &amp; trees block the signal (bDOM)</label>
+      <p id="data-estimate" class="hint"></p>
+    </section>
+
+    <section>
+      <label>Overlay opacity
+        <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.55">
+      </label>
+    </section>
+
+    <section>
+      <label class="check"><input id="height-on" type="checkbox"> Height colours (terrain)</label>
+      <div id="height-controls" hidden>
+        <label>Range
+          <span><input id="height-min" type="number" step="1" value="0"> –
+            <input id="height-max" type="number" step="1" value="80"> m</span>
+        </label>
+        <div id="height-legend"></div>
+        <div class="legend-labels"><span id="height-min-label"></span><span id="height-max-label"></span></div>
+        <label>Height opacity
+          <input id="height-opacity" type="range" min="0" max="1" step="0.05" value="0.6">
+        </label>
+        <button id="height-fit" type="button">Fit range to view</button>
+      </div>
+    </section>
+
+    <section>
+      <label>Terrain exaggeration
+        <input id="exaggeration" type="range" min="1" max="6" step="0.1" value="1">
+      </label>
+    </section>
+
+    <section id="status">
+      <div id="status-msg">No antenna placed.</div>
+      <dl id="stats" hidden>
+        <dt>Position</dt><dd id="s-pos"></dd>
+        <dt>Antenna base</dt><dd id="s-ground"></dd>
+        <dt>Antenna elevation</dt><dd id="s-antenna"></dd>
+        <dt>Grid resolution</dt><dd id="s-res"></dd>
+        <dt>Area in line of sight</dt><dd id="s-area"></dd>
+        <dt class="fresnel-stat">Fresnel zone clear</dt><dd class="fresnel-stat" id="s-clear"></dd>
+      </dl>
+    </section>
+
+    <p class="note">Data: © GeoBasis-DE/LVermGeo SH, CC BY 4.0 — DOP20 aerial imagery,
+      DGM1/DGM5 terrain and the bDOM surface model (buildings and vegetation from
+      aerial images). Outside Schleswig-Holstein, global data is used and buildings and vegetation are
+      <em>not</em> included. Vegetation only weakens 868 MHz signals rather than
+      fully blocking them, so the bDOM result is conservative.</p>
+  </aside>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="src/app.js"></script>
+</body>
+</html>

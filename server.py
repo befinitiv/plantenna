@@ -30,6 +30,7 @@ import ssl
 import sys
 import threading
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -51,6 +52,7 @@ AWS_TERRARIUM = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}
 # geodaten.schleswig-holstein.de does not send its intermediate certificate. We fetch it
 # from the issuer's AIA location and add it so that the chain to the system root verifies.
 SH_INTERMEDIATE_CERT = "http://www.d-trust.net/cgi-bin/D-TRUST_BR_CA_1-20-1_2020.crt"
+SH_ROOT_CERT = "http://www.d-trust.net/cgi-bin/D-TRUST_BR_Root_CA_1_2020.crt"
 
 PRODUCTS = {
     "dgm1": {"index": "DGM1_SH__Massendownload.geojson", "res": 1.0},
@@ -68,12 +70,19 @@ USER_AGENT = "plantenna/0.1 (LoRa antenna planning tool)"
 
 def make_ssl_context():
     ctx = ssl.create_default_context()
-    pem_path = CACHE / "d-trust-intermediate.pem"
-    if not pem_path.exists():
-        der = urllib.request.urlopen(SH_INTERMEDIATE_CERT, timeout=30).read()
-        pem_path.parent.mkdir(parents=True, exist_ok=True)
-        pem_path.write_text(ssl.DER_cert_to_PEM_cert(der))
-    ctx.load_verify_locations(cadata=pem_path.read_text())
+    # The download server omits the D-Trust chain.  The intermediate alone is
+    # not sufficient on machines whose system trust store does not contain the
+    # D-Trust root, so add both certificates to the normal system context.
+    certs = {
+        CACHE / "d-trust-intermediate.pem": SH_INTERMEDIATE_CERT,
+        CACHE / "d-trust-root.pem": SH_ROOT_CERT,
+    }
+    for pem_path, url in certs.items():
+        if not pem_path.exists():
+            der = urllib.request.urlopen(url, timeout=30).read()
+            pem_path.parent.mkdir(parents=True, exist_ok=True)
+            pem_path.write_text(ssl.DER_cert_to_PEM_cert(der))
+        ctx.load_verify_locations(cafile=str(pem_path))
     return ctx
 
 
@@ -455,8 +464,78 @@ def cached_tile(kind, z, x, y):
 TILE_PATH = re.compile(r"^/tiles/(dop|dem|dom|view-dem|view-dom)/(\d+)/(\d+)/(\d+)\.png$")
 
 
+def elevation_peaks(query):
+    """Return separated high or low ground points around a lon/lat position."""
+    values = parse_qs(query)
+    try:
+        lon = float(values["lon"][0])
+        lat = float(values["lat"][0])
+        radius = float(values.get("radius", [2])[0]) * 1000
+        count = int(values.get("count", [10])[0])
+        mode = values.get("mode", ["high"])[0]
+    except (KeyError, TypeError, ValueError) as err:
+        raise ValueError("lon, lat and radius are required") from err
+    if not (-180 <= lon <= 180 and -85 <= lat <= 85 and 0 < radius <= 30000):
+        raise ValueError("invalid position or radius")
+    count = max(1, min(count, 30))
+    if mode not in {"high", "low"}:
+        raise ValueError("mode must be high or low")
+
+    # A 25 m sampling grid is sufficient for candidate discovery. Increase the
+    # spacing for large radii to keep the request bounded.
+    spacing = max(25.0, math.sqrt(math.pi * radius * radius / 200000))
+    lon_step = spacing / (111320 * math.cos(math.radians(lat)))
+    rows = np.arange(-radius, radius + spacing, spacing)
+    cols = np.arange(-radius, radius + spacing, spacing)
+    east_offsets, north_offsets = np.meshgrid(cols, rows)
+    inside = east_offsets**2 + north_offsets**2 <= radius**2
+    sample_lon = lon + east_offsets[inside] / (111320 * math.cos(math.radians(lat)))
+    sample_lat = lat + north_offsets[inside] / 110540
+    east, north = lonlat_to_utm32(sample_lon, sample_lat)
+    heights = np.full(sample_lon.shape, np.nan)
+    # Use the downloadable native DGM5 grid here; block means are only used
+    # for already-cached display tiles and would make a new search empty.
+    sample_product("dgm5", east, north, heights)
+    valid = np.isfinite(heights)
+    if not valid.any():
+        return []
+
+    candidates = sorted(zip(heights[valid], sample_lon[valid], sample_lat[valid]), reverse=mode == "high")
+    selected = []
+    min_distance = max(150.0, radius / 12)
+    for height, point_lon, point_lat in candidates:
+        distance = math.hypot(
+            (point_lon - lon) * 111320 * math.cos(math.radians(lat)),
+            (point_lat - lat) * 110540,
+        )
+        if all(
+            math.hypot(
+                (point_lon - other["lon"]) * 111320 * math.cos(math.radians(lat)),
+                (point_lat - other["lat"]) * 110540,
+            ) >= min_distance
+            for other in selected
+        ):
+            selected.append({"lon": point_lon, "lat": point_lat, "elevation": float(height), "distance": distance})
+            if len(selected) == count:
+                break
+    return selected
+
+
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
+        request_path = urlsplit(self.path).path
+        if request_path in {"/elevation-peaks", "/api/elevation-peaks"}:
+            try:
+                data = json.dumps({"points": elevation_peaks(urlsplit(self.path).query)}).encode()
+            except Exception as err:
+                return self.send_error(400, str(err))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         m = TILE_PATH.match(self.path.split("?")[0])
         if not m:
             return super().do_GET()
@@ -474,7 +553,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store" if view else "max-age=86400")
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Browsers routinely cancel tile requests while panning, zooming,
+            # or replacing a stale source. The response cannot be completed,
+            # but this is not a server error and should not produce a traceback.
+            return
 
     def end_headers(self):
         # Without this, browsers may keep using a cached older app.js after an update.

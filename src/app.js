@@ -27,6 +27,7 @@ const map = new maplibregl.Map({
   maxPitch: 85,
   style: {
     version: 8,
+    glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
     sources: {
       satellite: {
         type: 'raster',
@@ -46,6 +47,7 @@ const map = new maplibregl.Map({
       },
       terrain: terrainSource(0),
       radius: { type: 'geojson', data: emptyFeatures() },
+      peaks: { type: 'geojson', data: emptyFeatures() },
     },
     layers: [
       { id: 'satellite', type: 'raster', source: 'satellite' },
@@ -55,6 +57,29 @@ const map = new maplibregl.Map({
         type: 'line',
         source: 'radius',
         paint: { 'line-color': '#ffcc00', 'line-width': 2, 'line-dasharray': [2, 2] },
+      },
+      {
+        id: 'high-peaks',
+        type: 'circle',
+        source: 'peaks',
+        filter: ['==', ['get', 'kind'], 'high'],
+        paint: {
+          'circle-color': '#8be9fd',
+          'circle-radius': 6,
+          'circle-stroke-color': '#111',
+          'circle-stroke-width': 2,
+        },
+      },
+      {
+        id: 'peak-labels-high',
+        type: 'symbol',
+        source: 'peaks',
+        filter: ['==', ['get', 'kind'], 'high'],
+        layout: {
+          'text-field': ['get', 'label'], 'text-size': 11, 'text-offset': [0, 1.2],
+          'text-allow-overlap': true, 'text-ignore-placement': true,
+        },
+        paint: { 'text-color': '#fff', 'text-halo-color': '#111', 'text-halo-width': 1 },
       },
     ],
     terrain: { source: 'terrain', exaggeration: 1 },
@@ -81,6 +106,19 @@ const marker = new maplibregl.Marker({ color: '#ffcc00', draggable: true });
 marker.on('dragend', () => setAntenna(marker.getLngLat()));
 map.on('click', (e) => setAntenna(e.lngLat));
 map.on('load', () => map.getCanvas().style.cursor = 'crosshair');
+function showPeakPopup(e) {
+  const point = e.features?.[0];
+  if (!point) return;
+  new maplibregl.Popup()
+    .setLngLat(e.lngLat)
+    .setHTML(`<strong>${point.properties.elevation} m</strong><br>${Number(point.properties.distance).toFixed(0)} m from antenna`)
+    .addTo(map);
+}
+for (const layer of ['high-peaks']) {
+  map.on('click', layer, showPeakPopup);
+  map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = 'crosshair'; });
+}
 
 // Markers sit on the displayed terrain, so the pin is lifted to the antenna
 // elevation with its offset, and a line (the mast) connects it to the ground.
@@ -135,6 +173,7 @@ function setAntenna(lngLat) {
   };
   marker.setLngLat(lngLat).addTo(map);
   updateRadiusCircle();
+  updatePeaks();
   scheduleCompute();
 }
 
@@ -154,6 +193,50 @@ function updateRadiusCircle() {
     type: 'FeatureCollection',
     features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} }],
   });
+}
+
+async function updatePeaks() {
+  const source = map.getSource('peaks');
+  if (!source) return;
+  if (!antenna || !$('peaks-on').checked) {
+    source.setData(emptyFeatures());
+    return;
+  }
+  setStatus('Loading high terrain points…');
+  try {
+    const baseParams = {
+      lon: antenna.lng,
+      lat: antenna.lat,
+      radius: $('radius').value,
+      count: $('peaks-count').value,
+    };
+    const modes = ['high'];
+    const results = await Promise.all(modes.map(async (mode) => {
+      const params = new URLSearchParams({ ...baseParams, mode });
+      const res = await fetch(`/api/elevation-peaks?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { points } = await res.json();
+      return points.map((point) => ({ ...point, kind: mode }));
+    }));
+    const points = results.flat();
+    source.setData({
+      type: 'FeatureCollection',
+      features: points.map((point) => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [point.lon, point.lat] },
+        properties: {
+          kind: point.kind,
+          elevation: point.elevation,
+          distance: point.distance,
+          label: `${point.kind === 'high' ? 'H' : 'L'}: ${point.elevation.toFixed(1)} m`,
+        },
+      })),
+    });
+    setStatus(`${$('peaks-count').value} high terrain points loaded.`);
+  } catch (err) {
+    source.setData(emptyFeatures());
+    setStatus(`High terrain points failed: ${err.message}`, true);
+  }
 }
 
 function emptyFeatures() {
@@ -325,9 +408,12 @@ for (const id of ['radius', 'zoom', 'surface']) {
     updateSurfaceOption();
     updateDataEstimate();
     updateRadiusCircle();
+    updatePeaks();
     scheduleCompute();
   });
 }
+$('peaks-on').addEventListener('input', updatePeaks);
+$('peaks-count').addEventListener('input', updatePeaks);
 
 // bDOM tiles are only produced at ~5.6 m resolution or finer.
 function updateSurfaceOption() {

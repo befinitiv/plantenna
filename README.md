@@ -77,6 +77,17 @@ a small step can be visible.
 The first analysis of an area downloads the source tiles; the panel shows an estimate. Later runs in the
 same area come from `cache/` and take about a second. Delete `cache/` to free disk space.
 
+## Highest terrain points
+
+Enable **Highest terrain points** to show the highest separated terrain candidates inside the current
+analysis radius. Set the number of candidates in **Candidate points**. The candidates are sampled from
+DGM5 data and are intended as a quick way to find promising antenna locations; they are not a substitute
+for the detailed viewshed analysis. The first search may download the required DGM5 tiles and add them to
+`cache/`. Click a blue `H:` marker to see its elevation and distance from the antenna.
+
+The feature is available through the local API as
+`/api/elevation-peaks?lon=<longitude>&lat=<latitude>&radius=<km>&count=<number>&mode=high`.
+
 ## Limitations
 
 - Diffraction over obstacles is not modeled. Orange and hidden areas may still be reachable with

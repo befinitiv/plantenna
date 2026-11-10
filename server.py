@@ -51,6 +51,7 @@ AWS_TERRARIUM = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}
 # geodaten.schleswig-holstein.de does not send its intermediate certificate. We fetch it
 # from the issuer's AIA location and add it so that the chain to the system root verifies.
 SH_INTERMEDIATE_CERT = "http://www.d-trust.net/cgi-bin/D-TRUST_BR_CA_1-20-1_2020.crt"
+SH_ROOT_CERT = "http://www.d-trust.net/cgi-bin/D-TRUST_BR_Root_CA_1_2020.crt"
 
 PRODUCTS = {
     "dgm1": {"index": "DGM1_SH__Massendownload.geojson", "res": 1.0},
@@ -68,12 +69,19 @@ USER_AGENT = "plantenna/0.1 (LoRa antenna planning tool)"
 
 def make_ssl_context():
     ctx = ssl.create_default_context()
-    pem_path = CACHE / "d-trust-intermediate.pem"
-    if not pem_path.exists():
-        der = urllib.request.urlopen(SH_INTERMEDIATE_CERT, timeout=30).read()
-        pem_path.parent.mkdir(parents=True, exist_ok=True)
-        pem_path.write_text(ssl.DER_cert_to_PEM_cert(der))
-    ctx.load_verify_locations(cadata=pem_path.read_text())
+    # The download server omits the D-Trust chain.  The intermediate alone is
+    # not sufficient on machines whose system trust store does not contain the
+    # D-Trust root, so add both certificates to the normal system context.
+    certs = {
+        CACHE / "d-trust-intermediate.pem": SH_INTERMEDIATE_CERT,
+        CACHE / "d-trust-root.pem": SH_ROOT_CERT,
+    }
+    for pem_path, url in certs.items():
+        if not pem_path.exists():
+            der = urllib.request.urlopen(url, timeout=30).read()
+            pem_path.parent.mkdir(parents=True, exist_ok=True)
+            pem_path.write_text(ssl.DER_cert_to_PEM_cert(der))
+        ctx.load_verify_locations(cafile=str(pem_path))
     return ctx
 
 

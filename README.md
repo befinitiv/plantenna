@@ -40,8 +40,9 @@ a small step can be visible.
 ## How it works
 
 - `server.py` serves the app and works around two limitations of the state services. The services send
-  no CORS headers, and the download server does not send its intermediate certificate. The server
-  fetches that certificate from D-Trust and adds it, so connections are still fully verified.
+  no CORS headers, and the download server does not send its D-Trust certificate chain. The server
+  fetches the required D-Trust intermediate and root certificates and adds them to its SSL context,
+  so connections are still fully verified.
   - `/tiles/dop/…` proxies the DOP20 WMS as Web Mercator tiles.
   - `/tiles/view-dem/…` and `/tiles/view-dom/…` serve the 3D display terrain from cached data only.
   - `/tiles/dem/…` and `/tiles/dom/…` download the 1 km × 1 km DGM and bDOM tiles (ETRS89 / UTM 32N)
